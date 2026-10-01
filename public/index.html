@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Field Reconstruction Lab</title>
+<style>
+  :root {
+    --bg: #f4f3ef; --surface: #ffffff; --border: #e3e1da; --ink: #1c1b19; --ink-muted: #6b6861;
+    --accent: #2a4a6b; --accent-ink: #ffffff;
+    --vw-50:#eaf2fb; --vw-400:#4c7fb3; --vw-700:#1f4a73;
+    --t-50:#fdf0e7; --t-400:#d9772e; --t-700:#a04f16;
+    --danger:#a23b2d; --radius:10px;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#121212; --surface:#1a1a1a; --border:#2d2d2d; --ink:#ededed; --ink-muted:#9a9a9a;
+      --accent:#5e93c4; --accent-ink:#0c1620;
+      --vw-50:#162433; --vw-400:#5e93c4; --vw-700:#9cc3e8;
+      --t-50:#2a1d12; --t-400:#e08a42; --t-700:#f0ad75;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#121212; --surface:#1a1a1a; --border:#2d2d2d; --ink:#ededed; --ink-muted:#9a9a9a;
+    --accent:#5e93c4; --accent-ink:#0c1620;
+    --vw-50:#162433; --vw-400:#5e93c4; --vw-700:#9cc3e8;
+    --t-50:#2a1d12; --t-400:#e08a42; --t-700:#f0ad75;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); }
+  .wrap { max-width:1400px; margin:0 auto; padding:24px 16px 48px; }
+  header h1 { font-size:1.6rem; margin:0 0 6px; }
+  header p { color:var(--ink-muted); margin:0 0 10px; max-width:70ch; line-height:1.45; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .badge { font-family:var(--mono); font-size:0.68rem; letter-spacing:.03em; text-transform:uppercase;
+           background:var(--surface); border:1px solid var(--border); border-radius:999px; padding:4px 10px; color:var(--ink-muted); }
+  .badge.live { color:#1a7a4c; border-color:#1a7a4c55; }
+  .badge.down { color:var(--danger); border-color:var(--danger); }
+  hr.sep { border:none; border-top:1px solid var(--border); margin:14px 0 20px; }
+  .layout { display:grid; grid-template-columns:300px 1fr; gap:18px; align-items:start; }
+  @media (max-width: 880px) { .layout { grid-template-columns:1fr; } }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:14px; }
+  .card h2 { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-muted); margin:0 0 10px; }
+  .seg { display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .seg button { flex:1; border:none; background:transparent; color:var(--ink); padding:9px 6px; font-size:.85rem; cursor:pointer; font-family:var(--sans); }
+  .seg button + button { border-left:1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background:var(--accent); color:var(--accent-ink); font-weight:600; }
+  .depthrow { display:grid; grid-template-columns:repeat(5,1fr); gap:4px; }
+  .depthrow button { font-family:var(--mono); font-size:.72rem; padding:7px 2px; border:1px solid var(--border); background:transparent; color:var(--ink); border-radius:6px; cursor:pointer; }
+  .depthrow button[aria-pressed="true"] { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
+  .row { display:flex; align-items:center; justify-content:space-between; font-size:.85rem; margin-bottom:8px; }
+  .row .mono { font-family:var(--mono); }
+  button.btn { font-family:var(--sans); font-size:.85rem; padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--ink); cursor:pointer; width:100%; margin-top:6px; }
+  button.btn:hover { border-color:var(--accent); }
+  button.btn.danger { color:var(--danger); border-color:var(--danger); }
+  input[type=number] { width:64px; font-family:var(--mono); font-size:.82rem; padding:5px 6px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--ink); }
+  input[type=range] { width:100%; }
+  .hint { font-size:.78rem; color:var(--ink-muted); line-height:1.4; margin-top:8px; }
+  .mapcard { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+  .maptop { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid var(--border); }
+  .vartoggle { display:flex; gap:6px; }
+  .vartoggle button { display:flex; align-items:center; gap:6px; border:1px solid var(--border); background:transparent; color:var(--ink); padding:7px 12px; border-radius:999px; cursor:pointer; font-size:.85rem; }
+  .vartoggle button[aria-pressed="true"] { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, transparent); font-weight:600; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+  .mapholder { position:relative; aspect-ratio:870/560; background:var(--bg); }
+  canvas { position:absolute; inset:0; width:100%; height:100%; }
+  #markerCanvas { cursor:crosshair; }
+  .corner { position:absolute; font-family:var(--mono); font-size:.65rem; color:#ffffffcc; background:#00000033; padding:2px 6px; border-radius:4px; }
+  .corner.tl { top:8px; left:8px; } .corner.br { bottom:8px; right:8px; }
+  .hintbubble { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#0008; color:#fff; padding:10px 16px; border-radius:999px; font-size:.85rem; pointer-events:none; }
+  .legend { display:flex; align-items:center; gap:10px; padding:8px 14px; font-family:var(--mono); font-size:.72rem; color:var(--ink-muted); }
+  .legend .bar { flex:1; height:8px; border-radius:4px; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); border-top:1px solid var(--border); }
+  .stat { padding:12px 14px; border-right:1px solid var(--border); }
+  .stat:last-child { border-right:none; }
+  .stat .k { font-size:.65rem; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-muted); }
+  .stat .v { font-family:var(--mono); font-size:1.05rem; margin-top:2px; }
+  details.explain { margin-top:14px; border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px; background:var(--surface); }
+  details.explain summary { cursor:pointer; font-size:.85rem; font-weight:600; }
+  details.explain .body { font-size:.82rem; color:var(--ink-muted); line-height:1.55; margin-top:8px; }
+  .editcard { position:absolute; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:12px; width:220px; box-shadow:0 8px 24px #0003; z-index:5; }
+  .editcard h3 { font-size:.85rem; margin:0 0 8px; display:flex; justify-content:space-between; }
+  .editcard .erow { margin-bottom:8px; }
+  .editcard label { font-size:.72rem; color:var(--ink-muted); display:block; margin-bottom:2px; }
+  .editcard .readout { float:right; font-family:var(--mono); }
+  footer.note { font-size:.78rem; color:var(--ink-muted); margin-top:18px; line-height:1.5; }
+  .apibase { font-size:.72rem; font-family:var(--mono); color:var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Field Reconstruction Lab</h1>
+    <p>Place sensors on the field, pick a reconstruction method, and scrub time — this page calls a
+       live API serving models actually trained on the Cook Farm sensor-network notebook (real
+       fitted Kriging variograms, tensor-completion factors, and a physics-informed neural network),
+       not an in-browser approximation.</p>
+    <div class="badges">
+      <span class="badge" id="apiBadge">checking api…</span>
+      <span class="badge">kriging / tensor / pinn — real trained weights</span>
+      <span class="badge" id="sensorBadge">0 sensors</span>
+    </div>
+  </header>
+  <hr class="sep">
+
+  <div class="layout">
+    <div>
+      <div class="card">
+        <h2>Reconstruction method</h2>
+        <div class="seg" id="methodSeg">
+          <button data-method="kriging" aria-pressed="true">Kriging</button>
+          <button data-method="tensor" aria-pressed="false">Tensor</button>
+          <button data-method="pinn" aria-pressed="false">PINN</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Depth</h2>
+        <div class="depthrow" id="depthRow"></div>
+      </div>
+
+      <div class="card" id="sensorsCard">
+        <h2>Sensors</h2>
+        <div class="row"><span>On the field</span><span class="mono" id="sensorCount">0</span></div>
+        <div class="row">
+          <input type="number" id="randomCount" value="6" min="1" max="30">
+          <button class="btn" id="addRandomBtn" style="width:auto;flex:1;margin-left:8px;">Add random sensors</button>
+        </div>
+        <button class="btn danger" id="clearBtn">Clear all sensors</button>
+        <p class="hint">Click anywhere on the field to drop a sensor, or click a marker to edit/remove it.
+          Kriging recomputes live from exactly these points using a real, pre-fit variogram.</p>
+      </div>
+
+      <div class="card" id="replayCard" style="display:none;">
+        <h2>Historical network (replay)</h2>
+        <p class="hint">Tensor and PINN reconstruct the field the models actually learned from training —
+          they query the trained model directly rather than your live sensors. Markers show the real
+          historical sensor network for reference. Switch to Kriging to place your own sensors.</p>
+      </div>
+
+      <div class="card" id="timelineCard" style="display:none;">
+        <h2>Timeline</h2>
+        <div class="row">
+          <button class="btn" id="playBtn" style="width:auto;">▶</button>
+          <span class="mono" id="dateReadout">—</span>
+        </div>
+        <input type="range" id="timelineSlider" min="0" max="1000" value="500">
+        <div class="row"><span class="mono" id="dateStart">—</span><span class="mono" id="dateEnd">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Backend</h2>
+        <div class="hint apibase">Calling <span id="apiBaseLabel">same origin</span>.</div>
+      </div>
+    </div>
+
+    <div>
+      <div class="mapcard">
+        <div class="maptop">
+          <div class="vartoggle" id="varToggle">
+            <button data-var="VW" aria-pressed="true"><span class="dot" style="background:var(--vw-400)"></span>Moisture</button>
+            <button data-var="T" aria-pressed="false"><span class="dot" style="background:var(--t-400)"></span>Temperature</button>
+          </div>
+          <span class="mono" id="methodLabel" style="font-size:.8rem;color:var(--ink-muted);">Kriging</span>
+        </div>
+        <div class="mapholder">
+          <canvas id="fieldCanvas"></canvas>
+          <canvas id="markerCanvas"></canvas>
+          <div class="corner tl" id="cornerTL">0 m</div>
+          <div class="corner br" id="cornerBR">— m × — m</div>
+          <div class="hintbubble" id="emptyHint">Click the field to place your first sensor</div>
+        </div>
+        <div class="legend">
+          <span class="mono" id="legendMin">—</span>
+          <div class="bar" id="legendBar"></div>
+          <span class="mono" id="legendMax">—</span>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="k">Points shown</div><div class="v" id="statCount">0</div></div>
+          <div class="stat"><div class="k">Field mean</div><div class="v" id="statMean">—</div></div>
+          <div class="stat"><div class="k">Field spread (σ)</div><div class="v" id="statSpread">—</div></div>
+          <div class="stat"><div class="k">Method</div><div class="v" id="statMethod">Kriging</div></div>
+        </div>
+      </div>
+
+      <details class="explain">
+        <summary>How this demo works</summary>
+        <div class="body">
+          <p><strong>Kriging</strong> is fully live: the sensors you place (position, value, depth) are
+          sent to the API, which runs real Ordinary Kriging using a variogram (nugget/sill/range) that
+          was fit to the actual historical data and cross-validated for each depth — not auto-fit from
+          your handful of points, which would be unstable with only a few sensors.</p>
+          <p><strong>Tensor completion</strong> and the <strong>physics-informed neural network</strong>
+          were trained once on the real historical sensor network and are queried directly by
+          coordinate/depth/date — they do not react to sensors you add, because that's not how a
+          trained model works. For a brand-new location, the tensor model's location-factors are
+          interpolated from nearby trained sensors (a documented approximation, not a claim that point
+          was ever observed).</p>
+          <p>No accuracy number is shown anywhere in this demo — the notebook's Stage 5 quantitative
+          comparison (RMSE/MAE/R² per method) is the place to look for that.</p>
+        </div>
+      </details>
+
+      <footer class="note">Field dimensions mirror the real Cook Farm sensor-network extent from the
+        companion notebook. This page calls a live backend serving the notebook's actual trained
+        models (Stage 9) — it is not a static approximation.</footer>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+fastapi==0.115.0
+numpy==1.26.4
+scipy==1.13.1
+pykrige==1.7.2
+pydantic==2.8.2

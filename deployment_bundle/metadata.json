@@ -1,0 +1,81 @@
+{
+  "variables": {
+    "VW": {
+      "label": "Soil moisture",
+      "unit": "m3/m3",
+      "q25": 0.243,
+      "q75": 0.394,
+      "min_observed": 0.063,
+      "max_observed": 0.597
+    },
+    "T": {
+      "label": "Soil temperature",
+      "unit": "degC",
+      "q25": 5.65,
+      "q75": 14.02,
+      "min_observed": 0.0,
+      "max_observed": 28.19
+    }
+  },
+  "depths_cm": [
+    30,
+    60,
+    90,
+    120,
+    150
+  ],
+  "field_extent_m": {
+    "x_min": 493248.05215717235,
+    "x_max": 494118.052088685,
+    "y_min": 5180567.318466002,
+    "y_max": 5181086.318432237
+  },
+  "date_range": {
+    "start": "2007-04-20",
+    "end": "2016-06-13"
+  },
+  "sensor_locations": [
+    "CAF003",
+    "CAF007",
+    "CAF009",
+    "CAF019",
+    "CAF031",
+    "CAF033",
+    "CAF035",
+    "CAF061",
+    "CAF067",
+    "CAF075",
+    "CAF079",
+    "CAF095",
+    "CAF119",
+    "CAF125",
+    "CAF129",
+    "CAF133",
+    "CAF135",
+    "CAF139",
+    "CAF141",
+    "CAF163",
+    "CAF173",
+    "CAF197",
+    "CAF201",
+    "CAF205",
+    "CAF209",
+    "CAF215",
+    "CAF217",
+    "CAF231",
+    "CAF237",
+    "CAF245",
+    "CAF275",
+    "CAF308",
+    "CAF310",
+    "CAF312",
+    "CAF314",
+    "CAF316",
+    "CAF349",
+    "CAF351",
+    "CAF357",
+    "CAF377",
+    "CAF397",
+    "CAF401"
+  ]
+}

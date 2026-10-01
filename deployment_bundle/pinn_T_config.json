@@ -1,0 +1,28 @@
+{
+  "in_dim": 4,
+  "hidden": 128,
+  "extra_dim": 0,
+  "input_order": [
+    "x",
+    "y",
+    "depth",
+    "t_days_since_t0"
+  ],
+  "t0": "2007-04-20",
+  "learned_D": 0.009991486556828022,
+  "lr": 0.001,
+  "n_epochs": 600,
+  "architecture": "3x Linear(hidden)+Tanh, final Linear(1) \u2014 forward pass: h=tanh(X@W0.T+b0); h=tanh(h@W2.T+b2); h=tanh(h@W4.T+b4); out=h@W6.T+b6",
+  "scaler_mean": [
+    493735.6035700006,
+    5180809.118206482,
+    89.3303156917363,
+    2131.605656143609
+  ],
+  "scaler_scale": [
+    219.42590925259552,
+    151.4719376227206,
+    42.313872183897914,
+    760.9472917696849
+  ]
+}
