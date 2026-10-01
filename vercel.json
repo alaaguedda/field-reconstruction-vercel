@@ -5,10 +5,15 @@
       "src": "api/index.py",
       "use": "@vercel/python",
       "config": { "includeFiles": ["deployment_bundle/**"] }
+    },
+    {
+      "src": "public/**",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     { "src": "/api/(.*)", "dest": "api/index.py" },
+    { "src": "/$", "dest": "/public/index.html" },
     { "src": "/(.*)", "dest": "/public/$1" }
   ]
 }
