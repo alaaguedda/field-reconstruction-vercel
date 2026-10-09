@@ -87,12 +87,49 @@
   .editcard .readout { float:right; font-family:var(--mono); }
   footer.note { font-size:.78rem; color:var(--ink-muted); margin-top:18px; line-height:1.5; }
   .apibase { font-size:.72rem; font-family:var(--mono); color:var(--ink-muted); }
+
+  /* --- Results-plots hero button --- */
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap; margin-bottom:8px; }
+  .topbar h1 { margin:0; }
+  .resultsbtn { display:inline-flex; align-items:center; justify-content:center; gap:12px; background:var(--accent); color:var(--accent-ink);
+                text-decoration:none; font-weight:700; font-size:1.15rem; padding:18px 34px; border-radius:14px;
+                box-shadow:0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent); transition:transform .15s ease, box-shadow .15s ease; }
+  .resultsbtn:hover { transform:translateY(-2px); box-shadow:0 10px 24px color-mix(in srgb, var(--accent) 45%, transparent); }
+  .resultsbtn:focus-visible { outline:3px solid var(--ink); outline-offset:3px; }
+  .resultsbtn svg { width:26px; height:26px; flex:none; }
+  @media (max-width: 640px) { .resultsbtn { width:100%; } }
+
+  /* --- Toolbar above the map --- */
+  .maptools { padding:12px 14px; border-bottom:1px solid var(--border); display:flex; flex-direction:column; gap:10px; }
+  .callout { display:flex; align-items:center; gap:10px; font-size:1rem; font-weight:600; padding:10px 14px; border-radius:10px;
+             background:color-mix(in srgb, var(--accent) 10%, transparent);
+             border:1px dashed color-mix(in srgb, var(--accent) 55%, transparent); transition:background .15s ease, border-color .15s ease; }
+  .callout.active { background:color-mix(in srgb, var(--accent) 22%, transparent); border-style:solid; }
+  .callout .pulse { width:12px; height:12px; border-radius:50%; background:var(--accent); flex:none; }
+  .callout.pulsing .pulse { animation:pulse 1.4s infinite; }
+  .callout .switchbtn { margin-left:auto; font-size:.82rem; padding:7px 12px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:var(--accent-ink); cursor:pointer; font-family:var(--sans); font-weight:600; }
+  @keyframes pulse { 0% { box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 70% { box-shadow:0 0 0 12px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+  @media (prefers-reduced-motion: reduce) { .callout.pulsing .pulse { animation:none; } }
+  .toolrow { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .toolrow .btn { width:auto; margin:0; padding:10px 16px; }
+  .toolrow .spacer { flex:1; }
+  .toolrow label { font-size:.78rem; color:var(--ink-muted); }
+  .btn.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:700; font-size:.95rem; }
+  .cursortip { position:absolute; pointer-events:none; background:#000c; color:#fff; font-size:.75rem; padding:5px 9px; border-radius:6px; white-space:nowrap; z-index:4; display:none; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>Field Reconstruction Lab</h1>
+    <div class="topbar">
+      <h1>Field Reconstruction Lab</h1>
+      <a class="resultsbtn" id="resultsBtn" href="CAF_field_reconstruction_results_plots.html" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6" rx="0.5"/><rect x="12" y="8" width="3" height="10" rx="0.5"/><rect x="17" y="5" width="3" height="13" rx="0.5"/>
+        </svg>
+        Results plot
+      </a>
+    </div>
     <p>Place sensors on the field, pick a reconstruction method, and scrub time — this page calls a
        live API serving models actually trained on the Cook Farm sensor-network notebook (real
        fitted Kriging variograms, tensor-completion factors, and a physics-informed neural network),
@@ -124,13 +161,9 @@
       <div class="card" id="sensorsCard">
         <h2>Sensors</h2>
         <div class="row"><span>On the field</span><span class="mono" id="sensorCount">0</span></div>
-        <div class="row">
-          <input type="number" id="randomCount" value="6" min="1" max="30">
-          <button class="btn" id="addRandomBtn" style="width:auto;flex:1;margin-left:8px;">Add random sensors</button>
-        </div>
-        <button class="btn danger" id="clearBtn">Clear all sensors</button>
-        <p class="hint">Click anywhere on the field to drop a sensor, or click a marker to edit/remove it.
-          Kriging recomputes live from exactly these points using a real, pre-fit variogram.</p>
+        <p class="hint">Click anywhere on the land to drop a sensor, or click a marker to edit/remove it.
+          Random sensors and "Clear" are in the bar above the map. Kriging recomputes live from exactly
+          these points using a real, pre-fit variogram.</p>
       </div>
 
       <div class="card" id="replayCard" style="display:none;">
@@ -165,12 +198,30 @@
           </div>
           <span class="mono" id="methodLabel" style="font-size:.8rem;color:var(--ink-muted);">Kriging</span>
         </div>
+        <div class="maptools" id="mapTools">
+          <div class="callout pulsing" id="mapCallout">
+            <span class="pulse"></span>
+            <span id="calloutText">Click on the map to add a sensor configuration</span>
+            <button class="switchbtn" id="switchKrigingBtn" style="display:none;">Switch to Kriging</button>
+          </div>
+          <div class="toolrow">
+            <span id="krigingTools" class="toolrow">
+              <label for="randomCount">Random sensors</label>
+              <input type="number" id="randomCount" value="6" min="1" max="30">
+              <button class="btn primary" id="addRandomBtn">Add random sensors</button>
+              <button class="btn danger" id="clearBtn">Clear all</button>
+            </span>
+            <span class="spacer"></span>
+            <button class="btn" id="reshapeBtn" title="Generate a new randomly shaped piece of land">New land shape</button>
+          </div>
+        </div>
         <div class="mapholder">
           <canvas id="fieldCanvas"></canvas>
           <canvas id="markerCanvas"></canvas>
           <div class="corner tl" id="cornerTL">0 m</div>
           <div class="corner br" id="cornerBR">— m × — m</div>
-          <div class="hintbubble" id="emptyHint">Click the field to place your first sensor</div>
+          <div class="hintbubble" id="emptyHint">Click on the map to add a sensor configuration</div>
+          <div class="cursortip" id="cursorTip"></div>
         </div>
         <div class="legend">
           <span class="mono" id="legendMin">—</span>

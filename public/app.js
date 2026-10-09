@@ -33,6 +33,7 @@ const state = {
   editing: null,    // sensor id being edited
   lastGrid: null,
   nextId: 1,
+  land: null,       // polygon outlining the "piece of land": [[u, v], ...] in 0..1 canvas coords (v grows downward)
 };
 
 const els = {};
@@ -40,7 +41,8 @@ const els = {};
  "sensorCount", "randomCount", "addRandomBtn", "clearBtn", "playBtn", "dateReadout",
  "timelineSlider", "dateStart", "dateEnd", "varToggle", "methodLabel", "fieldCanvas", "markerCanvas",
  "cornerTL", "cornerBR", "emptyHint", "legendMin", "legendMax", "legendBar",
- "statCount", "statMean", "statSpread", "statMethod", "apiBaseLabel"].forEach(id => { els[id] = document.getElementById(id); });
+ "statCount", "statMean", "statSpread", "statMethod", "apiBaseLabel",
+ "mapCallout", "calloutText", "krigingTools", "reshapeBtn", "cursorTip", "switchKrigingBtn"].forEach(id => { els[id] = document.getElementById(id); });
 
 /* ---------------------------------------------------------------------- */
 /* API                                                                     */
@@ -59,7 +61,7 @@ async function fetchMeta() {
     state.apiOk = false;
     els.apiBadge.textContent = "api unreachable";
     els.apiBadge.classList.add("down");
-    els.emptyHint.textContent = "Backend not reachable yet — deploy the Hugging Face Space, then reload this page.";
+    els.emptyHint.textContent = "Backend not reachable — check the deployment's /api/health, then reload this page.";
     els.emptyHint.style.display = "block";
     console.error(e);
   }
@@ -135,37 +137,119 @@ function sizeCanvases() {
   });
 }
 
+/* ---------------------------------------------------------------------- */
+/* The "piece of land": a randomly shaped polygon the field is clipped to  */
+/* ---------------------------------------------------------------------- */
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function pointInPoly(u, v, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [ui, vi] = pts[i], [uj, vj] = pts[j];
+    if ((vi > v) !== (vj > v) && u < ((uj - ui) * (v - vi)) / (vj - vi) + ui) inside = !inside;
+  }
+  return inside;
+}
+function isInsideLand(u, v) { return !state.land || pointInPoly(u, v, state.land); }
+
+/* A lumpy superellipse: smooth, irregular coastline built from a few random harmonics.
+   k in (0..1] scales how wild the outline is (later retries use smaller k). */
+function randomBlob(k) {
+  const STEPS = 140, N = 3.2;
+  const harmonics = [2, 3, 4, 5, 7].map(h => ({
+    h, amp: (0.20 / h + Math.random() * 0.05) * k, phase: Math.random() * Math.PI * 2,
+  }));
+  const raw = [];
+  let maxU = 0, maxV = 0;
+  for (let i = 0; i < STEPS; i++) {
+    const th = (i / STEPS) * Math.PI * 2;
+    const c = Math.cos(th), s = Math.sin(th);
+    let r = 1;
+    for (const { h, amp, phase } of harmonics) r += amp * Math.sin(h * th + phase);
+    const bu = Math.sign(c) * Math.pow(Math.abs(c), 2 / N);
+    const bv = Math.sign(s) * Math.pow(Math.abs(s), 2 / N);
+    const u = bu * r, v = bv * r;
+    raw.push([u, v]);
+    maxU = Math.max(maxU, Math.abs(u)); maxV = Math.max(maxV, Math.abs(v));
+  }
+  // fill the canvas (with a small margin) regardless of how lumpy the draw was
+  return raw.map(([u, v]) => [0.5 + (u / maxU) * 0.485, 0.5 + (v / maxV) * 0.485]);
+}
+
+function generateLand() {
+  const ext = state.meta.field_extent_m;
+  const known = Object.values(state.meta.sensor_coords || {}).map(([x, y]) => [
+    (x - ext.x_min) / (ext.x_max - ext.x_min), 1 - (y - ext.y_min) / (ext.y_max - ext.y_min),
+  ]);
+  // the real historical sensors must all sit on the land, otherwise Tensor/PINN's replay markers would float in the sea
+  for (let attempt = 0; attempt < 500; attempt++) {
+    const pts = randomBlob(Math.max(0.1, 1 - attempt / 300));
+    if (known.every(([u, v]) => pointInPoly(u, v, pts))) return pts;
+  }
+  // last resort: an almost-rectangular plot that contains everything
+  const pts = [];
+  for (let i = 0; i < 140; i++) {
+    const th = (i / 140) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
+    pts.push([0.5 + Math.sign(c) * Math.pow(Math.abs(c), 0.12) * 0.495, 0.5 + Math.sign(s) * Math.pow(Math.abs(s), 0.12) * 0.495]);
+  }
+  return pts;
+}
+
+function tracePath(ctx, W, H) {
+  ctx.beginPath();
+  state.land.forEach(([u, v], i) => { if (i) ctx.lineTo(u * W, v * H); else ctx.moveTo(u * W, v * H); });
+  ctx.closePath();
+}
+
 function drawField(data) {
   const ctx = els.fieldCanvas.getContext("2d");
   const W = els.fieldCanvas.width, H = els.fieldCanvas.height;
   ctx.clearRect(0, 0, W, H);
-  if (!data) return;
+  if (!state.land) return;
 
-  const n = data.grid.length;
-  const off = document.createElement("canvas");
-  off.width = n; off.height = n;
-  const octx = off.getContext("2d");
-  const img = octx.createImageData(n, n);
-  const vmeta = state.meta.variables[state.variable];
-  const lo = vmeta.min_observed, hi = vmeta.max_observed;
+  // land silhouette (always visible, even before any sensor exists)
+  ctx.save();
+  tracePath(ctx, W, H);
+  ctx.fillStyle = cssVar("--surface") || "#fff";
+  ctx.fill();
 
-  for (let row = 0; row < n; row++) {
-    const srcRow = n - 1 - row; // flip so higher y (north) is up
-    for (let col = 0; col < n; col++) {
-      const v = data.grid[srcRow][col];
-      const [r, g, b] = colorFor(v, lo, hi, state.variable);
-      const idx = (row * n + col) * 4;
-      img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b; img.data[idx + 3] = 255;
+  if (data) {
+    ctx.clip();   // everything below is painted only inside the land outline
+    const n = data.grid.length;
+    const off = document.createElement("canvas");
+    off.width = n; off.height = n;
+    const octx = off.getContext("2d");
+    const img = octx.createImageData(n, n);
+    const vmeta = state.meta.variables[state.variable];
+    const lo = vmeta.min_observed, hi = vmeta.max_observed;
+
+    for (let row = 0; row < n; row++) {
+      const srcRow = n - 1 - row; // flip so higher y (north) is up
+      for (let col = 0; col < n; col++) {
+        const v = data.grid[srcRow][col];
+        const [r, g, b] = colorFor(v, lo, hi, state.variable);
+        const idx = (row * n + col) * 4;
+        img.data[idx] = r; img.data[idx + 1] = g; img.data[idx + 2] = b; img.data[idx + 3] = 255;
+      }
     }
-  }
-  octx.putImageData(img, 0, 0);
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(off, 0, 0, W, H);
+    octx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, W, H);
 
-  els.legendMin.textContent = lo.toFixed(2) + " " + vmeta.unit;
-  els.legendMax.textContent = hi.toFixed(2) + " " + vmeta.unit;
-  const stops = RAMPS[state.variable];
-  els.legendBar.style.background = `linear-gradient(90deg, ${stops.join(",")})`;
+    els.legendMin.textContent = lo.toFixed(2) + " " + vmeta.unit;
+    els.legendMax.textContent = hi.toFixed(2) + " " + vmeta.unit;
+    const stops = RAMPS[state.variable];
+    els.legendBar.style.background = `linear-gradient(90deg, ${stops.join(",")})`;
+  }
+  ctx.restore();
+
+  // coastline
+  ctx.save();
+  tracePath(ctx, W, H);
+  ctx.lineWidth = 2.5 * devicePixelRatio; ctx.lineJoin = "round";
+  ctx.strokeStyle = cssVar("--ink-muted") || "#666";
+  ctx.stroke();
+  ctx.restore();
 }
 
 function fieldToCanvasXY(x, y) {
@@ -220,7 +304,13 @@ function updateStats(data) {
     els.statCount.textContent = state.meta.sensor_locations ? state.meta.sensor_locations.length : "—";
   }
   if (!data) { els.statMean.textContent = "—"; els.statSpread.textContent = "—"; return; }
-  const flat = data.grid.flat();
+  // statistics cover only the cells that lie on the land, not the surrounding water
+  const n = data.grid.length;
+  let flat = [];
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    if (isInsideLand((c + 0.5) / n, 1 - (r + 0.5) / n)) flat.push(data.grid[r][c]);
+  }
+  if (!flat.length) flat = data.grid.flat();
   const mean = flat.reduce((a, b) => a + b, 0) / flat.length;
   const variance = flat.reduce((a, b) => a + (b - mean) ** 2, 0) / flat.length;
   const vmeta = state.meta.variables[state.variable];
@@ -299,8 +389,14 @@ function addRandomSensors(n) {
   const extent = state.meta.field_extent_m;
   const vw = state.meta.variables.VW, t = state.meta.variables.T;
   for (let i = 0; i < n; i++) {
-    const x = extent.x_min + Math.random() * (extent.x_max - extent.x_min);
-    const y = extent.y_min + Math.random() * (extent.y_max - extent.y_min);
+    // rejection-sample so every random sensor lands on the land
+    let u = 0.5, v = 0.5;
+    for (let tries = 0; tries < 200; tries++) {
+      u = Math.random(); v = Math.random();
+      if (isInsideLand(u, v)) break;
+    }
+    const x = extent.x_min + u * (extent.x_max - extent.x_min);
+    const y = extent.y_min + (1 - v) * (extent.y_max - extent.y_min);
     state.sensors.push({
       id: state.nextId++, x, y,
       vw: vw.q25 + Math.random() * (vw.q75 - vw.q25),
@@ -316,6 +412,23 @@ function addRandomSensors(n) {
 function refreshSensorCount() {
   els.sensorCount.textContent = state.sensors.length;
   els.sensorBadge.textContent = state.sensors.length + (state.sensors.length === 1 ? " sensor" : " sensors");
+  updateCallout();
+}
+
+function updateCallout() {
+  const isKriging = state.method === "kriging";
+  els.calloutText.textContent = isKriging
+    ? "Click on the map to add a sensor configuration"
+    : "Tensor and PINN replay the trained field — switch to Kriging to place your own sensors.";
+  els.switchKrigingBtn.style.display = isKriging ? "none" : "";
+  els.mapCallout.classList.toggle("pulsing", isKriging && state.sensors.length === 0);
+}
+
+function findSensorAt(px, py) {
+  return state.sensors.find(s => {
+    const [sx, sy] = fieldToCanvasXY(s.x, s.y);
+    return Math.hypot(sx - px, sy - py) < 10;
+  });
 }
 
 /* ---------------------------------------------------------------------- */
@@ -326,6 +439,8 @@ function applyMethodVisibility() {
   els.sensorsCard.style.display = isKriging ? "" : "none";
   els.replayCard.style.display = isKriging ? "none" : "";
   els.timelineCard.style.display = isKriging ? "none" : "";
+  els.krigingTools.style.display = isKriging ? "" : "none";
+  updateCallout();
   els.methodLabel.textContent = state.method[0].toUpperCase() + state.method.slice(1);
   document.querySelectorAll("#methodSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.method === state.method));
 }
@@ -402,20 +517,59 @@ function wireEvents() {
     if (state.method !== "kriging") return;
     const rect = els.markerCanvas.getBoundingClientRect();
     const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
-    const hit = state.sensors.find(s => {
-      const [sx, sy] = fieldToCanvasXY(s.x, s.y);
-      return Math.hypot(sx - px, sy - py) < 10;
-    });
+    const hit = findSensorAt(px, py);
     if (hit) {
       openEditCard(hit, px, py);
-    } else {
+    } else if (isInsideLand(px / rect.width, py / rect.height)) {
       const [x, y] = canvasToFieldXY(px, py);
       const s = addSensorAt(x, y);
       openEditCard(s, px, py);
     }
+    // clicks outside the land outline are ignored
+  });
+
+  // live hover feedback: cursor shape + a small tooltip that follows the pointer
+  els.markerCanvas.addEventListener("mousemove", (ev) => {
+    if (state.method !== "kriging") { els.cursorTip.style.display = "none"; els.markerCanvas.style.cursor = "default"; return; }
+    const rect = els.markerCanvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+    const overSensor = findSensorAt(px, py);
+    const inside = isInsideLand(px / rect.width, py / rect.height);
+    let text;
+    if (overSensor) text = "Click to edit this sensor";
+    else if (inside) { const [x, y] = canvasToFieldXY(px, py); text = `Click to add a sensor here · x ${x.toFixed(0)} m, y ${y.toFixed(0)} m`; }
+    else text = "Outside the land";
+    els.markerCanvas.style.cursor = overSensor ? "pointer" : inside ? "crosshair" : "not-allowed";
+    els.cursorTip.textContent = text;
+    els.cursorTip.style.display = "block";
+    const tipW = els.cursorTip.offsetWidth;
+    els.cursorTip.style.left = Math.min(px + 14, rect.width - tipW - 6) + "px";
+    els.cursorTip.style.top = Math.min(py + 16, rect.height - 30) + "px";
+    els.mapCallout.classList.add("active");
+  });
+  els.markerCanvas.addEventListener("mouseleave", () => {
+    els.cursorTip.style.display = "none";
+    els.mapCallout.classList.remove("active");
+  });
+
+  els.switchKrigingBtn.addEventListener("click", () => {
+    document.querySelector('#methodSeg button[data-method="kriging"]').click();
+  });
+
+  els.reshapeBtn.addEventListener("click", () => {
+    state.land = generateLand();
+    // sensors that now fall outside the new coastline are dropped
+    const ext = state.meta.field_extent_m;
+    state.sensors = state.sensors.filter(s => isInsideLand(
+      (s.x - ext.x_min) / (ext.x_max - ext.x_min), 1 - (s.y - ext.y_min) / (ext.y_max - ext.y_min)));
+    closeEditCard(); refreshSensorCount();
+    drawField(state.lastGrid); drawMarkers(); updateStats(state.lastGrid); scheduleReconstruct();
   });
 
   window.addEventListener("resize", () => { sizeCanvases(); drawField(state.lastGrid); drawMarkers(); });
+  if (window.matchMedia) {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => drawField(state.lastGrid));
+  }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -427,11 +581,13 @@ function wireEvents() {
   if (!state.meta) return;
   const extent = state.meta.field_extent_m;
   els.cornerBR.textContent = `${Math.round(extent.x_max - extent.x_min)} m × ${Math.round(extent.y_max - extent.y_min)} m`;
+  state.land = generateLand();
   buildDepthButtons();
   initTimeline();
   applyMethodVisibility();
   wireEvents();
   refreshSensorCount();
+  drawField(null);
   drawMarkers();
   els.emptyHint.style.display = "block";
 })();
