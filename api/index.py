@@ -78,6 +78,11 @@ def load_system():
                 "locations": list(tz["locations"]), "depths": [int(d) for d in tz["depths"]],
                 "dates": np.array([np.datetime64(d) for d in tz["dates"]]),
             }
+            # A date with no sensor readings anywhere gets an all-zero time factor (there was nothing
+            # to fit), which would decode to "the whole field is exactly 0" — a blank frame. Such
+            # dates must not be used as interpolation anchors. Detected from the factors themselves,
+            # so this also protects bundles exported before the notebook was fixed.
+            tensor["supported"] = np.linalg.norm(tensor["C"], axis=1) > 1e-9
 
             # PINN: plain numpy weights + config (no torch/joblib needed to load or run)
             with open(os.path.join(BUNDLE_DIR, f"pinn_{var}_config.json")) as f:
@@ -190,20 +195,36 @@ def interpolate_location_factors(xy_query, coords_known, A, k=6, power=2):
     return np.einsum("nkr,nk->nr", A_rows, w)
 
 
-def interpolate_time_factor(query_date, known_dates, C):
+def interpolate_time_factor(query_date, known_dates, C, supported=None):
+    """Linear interpolation of the tensor's time factor, using only dates that have real support.
+
+    Returns (factor, bridged). `bridged` is True when the query sits next to a date that had no
+    readings anywhere, i.e. the value comes from interpolating across that gap."""
+    if supported is None:
+        supported = np.ones(len(known_dates), dtype=bool)
+    sup_idx = np.where(supported)[0]
+    if len(sup_idx) == 0:
+        return C[0], False
+    dates, Cs = known_dates[sup_idx], C[sup_idx]
+    unsupported_dates = known_dates[~supported]
+
     qd = np.datetime64(query_date)
-    if qd <= known_dates[0]:
-        return C[0]
-    if qd >= known_dates[-1]:
-        return C[-1]
-    idx = np.searchsorted(known_dates, qd)
-    d0, d1 = known_dates[idx - 1], known_dates[idx]
-    span = (d1 - d0) / np.timedelta64(1, "D")
-    t = (qd - d0) / np.timedelta64(1, "D") / span if span > 0 else 0.0
-    return C[idx - 1] * (1 - t) + C[idx] * t
+    if qd <= dates[0]:
+        lo, hi, out = qd, dates[0], Cs[0]
+    elif qd >= dates[-1]:
+        lo, hi, out = dates[-1], qd, Cs[-1]
+    else:
+        idx = np.searchsorted(dates, qd)
+        d0, d1 = dates[idx - 1], dates[idx]
+        span = (d1 - d0) / np.timedelta64(1, "D")
+        t = (qd - d0) / np.timedelta64(1, "D") / span if span > 0 else 0.0
+        lo, hi, out = d0, d1, Cs[idx - 1] * (1 - t) + Cs[idx] * t
+    bridged = bool(np.any((unsupported_dates > lo) & (unsupported_dates < hi)))
+    return out, bridged
 
 
 def tensor_grid(var, depth, query_date, gx, gy):
+    """Returns (grid, bridged)."""
     tensor = SYSTEM["per_variable"][var]["tensor"]
     if depth not in tensor["depths"]:
         raise HTTPException(400, f"Depth {depth} not in trained depths {tensor['depths']}.")
@@ -213,10 +234,10 @@ def tensor_grid(var, depth, query_date, gx, gy):
     GX, GY = np.meshgrid(gx, gy)
     flat = np.stack([GX.ravel(), GY.ravel()], axis=1)
     Aq = interpolate_location_factors(flat, coords_known, tensor["A"])
-    Ct = interpolate_time_factor(query_date, tensor["dates"], tensor["C"])
+    Ct, bridged = interpolate_time_factor(query_date, tensor["dates"], tensor["C"], tensor["supported"])
     Bd = tensor["B"][depth_idx]
     pred = Aq @ (Bd * Ct)
-    return pred.reshape(GX.shape)
+    return pred.reshape(GX.shape), bridged
 
 
 def pinn_grid(var, depth, query_date, gx, gy):
@@ -248,6 +269,13 @@ class Sensor(BaseModel):
     value: float
 
 
+class Extent(BaseModel):
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+
 class ReconstructRequest(BaseModel):
     variable: str          # "VW" or "T"
     method: str            # "kriging" | "tensor" | "pinn"
@@ -255,6 +283,9 @@ class ReconstructRequest(BaseModel):
     date: str              # "YYYY-MM-DD"
     sensors: Optional[List[Sensor]] = None
     grid_n: int = GRID_N_DEFAULT
+    # Optional: the map window to reconstruct. The page shows a small margin of "land" around the
+    # sensor field, so it asks for that padded window; omitted = the sensors' own bounding box.
+    extent: Optional[Extent] = None
 
 
 @app.get("/api/health")
@@ -280,20 +311,35 @@ def reconstruct(req: ReconstructRequest):
     if req.variable not in VARIABLES:
         raise HTTPException(400, f"variable must be one of {VARIABLES}")
 
-    extent = SYSTEM["metadata"]["field_extent_m"]
+    base = SYSTEM["metadata"]["field_extent_m"]
+    extent = req.extent.dict() if req.extent else base
+    bw, bh = base["x_max"] - base["x_min"], base["y_max"] - base["y_min"]
+    if not (extent["x_max"] > extent["x_min"] and extent["y_max"] > extent["y_min"]) or \
+       (extent["x_max"] - extent["x_min"]) > 3 * bw or (extent["y_max"] - extent["y_min"]) > 3 * bh:
+        raise HTTPException(400, "extent must be a non-empty window no larger than 3x the sensor field.")
+    if not (2 <= req.grid_n <= 200):
+        raise HTTPException(400, "grid_n must be between 2 and 200.")
     gx = np.linspace(extent["x_min"], extent["x_max"], req.grid_n)
     gy = np.linspace(extent["y_min"], extent["y_max"], req.grid_n)
 
     structure = "ok"
+    bridged = False
     if req.method == "kriging":
         sensors = [s.dict() for s in (req.sensors or [])]
         grid, structure = kriging_grid(req.variable, req.depth, sensors, gx, gy)
     elif req.method == "tensor":
-        grid = tensor_grid(req.variable, req.depth, req.date, gx, gy)
+        grid, bridged = tensor_grid(req.variable, req.depth, req.date, gx, gy)
     elif req.method == "pinn":
         grid = pinn_grid(req.variable, req.depth, req.date, gx, gy)
     else:
         raise HTTPException(400, "method must be 'kriging', 'tensor', or 'pinn'")
+
+    if req.method in ("tensor", "pinn"):
+        # a trained model can overshoot where it has little support; values outside the range ever
+        # recorded for this variable are artefacts, so keep predictions inside it
+        vm = SYSTEM["metadata"].get("variables", {}).get(req.variable, {})
+        if "min_observed" in vm and "max_observed" in vm:
+            grid = np.clip(grid, vm["min_observed"], vm["max_observed"])
 
     grid = np.nan_to_num(grid, nan=float(np.nanmean(grid)) if np.isfinite(np.nanmean(grid)) else 0.0)
     return {
@@ -303,6 +349,7 @@ def reconstruct(req: ReconstructRequest):
         "min": float(grid.min()),
         "max": float(grid.max()),
         "spatial_structure": structure,   # "none" = kriging's frozen variogram for this depth is flat
+        "date_note": "bridged" if bridged else None,   # tensor only: no readings on/near this date, interpolated
     }
 
 
