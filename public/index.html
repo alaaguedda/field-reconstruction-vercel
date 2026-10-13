@@ -115,6 +115,8 @@
   .toolrow .spacer { flex:1; }
   .toolrow label { font-size:.78rem; color:var(--ink-muted); }
   .btn.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:700; font-size:.95rem; }
+  .structurenote { font-size:.82rem; line-height:1.45; padding:9px 12px; border-radius:8px; color:var(--ink);
+                   background:color-mix(in srgb, #d9a21b 16%, transparent); border:1px solid color-mix(in srgb, #d9a21b 55%, transparent); }
   .cursortip { position:absolute; pointer-events:none; background:#000c; color:#fff; font-size:.75rem; padding:5px 9px; border-radius:6px; white-space:nowrap; z-index:4; display:none; }
 </style>
 </head>
@@ -213,6 +215,10 @@
             </span>
             <span class="spacer"></span>
             <button class="btn" id="reshapeBtn" title="Generate a new randomly shaped piece of land">New land shape</button>
+          </div>
+          <div class="structurenote" id="structureNote" role="status" style="display:none;">
+            No spatial correlation was found at this depth in the training data, so Kriging returns a
+            nearly uniform field here instead of spreading each sensor's value outward. Try another depth.
           </div>
         </div>
         <div class="mapholder">

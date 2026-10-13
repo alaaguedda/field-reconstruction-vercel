@@ -42,7 +42,7 @@ const els = {};
  "timelineSlider", "dateStart", "dateEnd", "varToggle", "methodLabel", "fieldCanvas", "markerCanvas",
  "cornerTL", "cornerBR", "emptyHint", "legendMin", "legendMax", "legendBar",
  "statCount", "statMean", "statSpread", "statMethod", "apiBaseLabel",
- "mapCallout", "calloutText", "krigingTools", "reshapeBtn", "cursorTip", "switchKrigingBtn"].forEach(id => { els[id] = document.getElementById(id); });
+ "mapCallout", "calloutText", "krigingTools", "reshapeBtn", "cursorTip", "switchKrigingBtn", "structureNote"].forEach(id => { els[id] = document.getElementById(id); });
 
 /* ---------------------------------------------------------------------- */
 /* API                                                                     */
@@ -80,6 +80,7 @@ async function doReconstruct() {
     state.lastGrid = null;
     drawField(null);
     updateStats(null);
+    els.structureNote.style.display = "none";
     els.emptyHint.style.display = "block";
     return;
   }
@@ -105,6 +106,7 @@ async function doReconstruct() {
     if (!r.ok) throw new Error("reconstruct " + r.status);
     const data = await r.json();
     state.lastGrid = data;
+    els.structureNote.style.display = (state.method === "kriging" && data.spatial_structure === "none") ? "" : "none";
     drawField(data);
     updateStats(data);
   } catch (e) {
@@ -421,6 +423,7 @@ function updateCallout() {
     ? "Click on the map to add a sensor configuration"
     : "Tensor and PINN replay the trained field — switch to Kriging to place your own sensors.";
   els.switchKrigingBtn.style.display = isKriging ? "none" : "";
+  if (!isKriging) els.structureNote.style.display = "none";
   els.mapCallout.classList.toggle("pulsing", isKriging && state.sensors.length === 0);
 }
 
