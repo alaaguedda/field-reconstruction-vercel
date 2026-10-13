@@ -92,7 +92,7 @@ async function doReconstruct() {
   const dateStr = dayOffsetToISO(state.timelineDays);
   const body = {
     variable: state.variable, method: state.method, depth: state.depth,
-    date: dateStr, grid_n: 45,
+    date: dateStr, grid_n: 45, extent: viewExtent(),
   };
   if (state.method === "kriging") {
     body.sensors = state.sensors.map(s => ({ x: s.x, y: s.y, value: state.variable === "VW" ? s.vw : s.t }));
@@ -107,6 +107,8 @@ async function doReconstruct() {
     const data = await r.json();
     state.lastGrid = data;
     els.structureNote.style.display = (state.method === "kriging" && data.spatial_structure === "none") ? "" : "none";
+    // tensor only: the model had no readings on/near this date and interpolated across the gap
+    els.dateReadout.textContent = dateStr + (state.method === "tensor" && data.date_note === "bridged" ? "  ·  no readings, interpolated" : "");
     drawField(data);
     updateStats(data);
   } catch (e) {
@@ -154,45 +156,64 @@ function pointInPoly(u, v, pts) {
 }
 function isInsideLand(u, v) { return !state.land || pointInPoly(u, v, state.land); }
 
-/* A lumpy superellipse: smooth, irregular coastline built from a few random harmonics.
-   k in (0..1] scales how wild the outline is (later retries use smaller k). */
-function randomBlob(k) {
-  const STEPS = 140, N = 3.2;
-  const harmonics = [2, 3, 4, 5, 7].map(h => ({
-    h, amp: (0.20 / h + Math.random() * 0.05) * k, phase: Math.random() * Math.PI * 2,
-  }));
-  const raw = [];
-  let maxU = 0, maxV = 0;
-  for (let i = 0; i < STEPS; i++) {
-    const th = (i / STEPS) * Math.PI * 2;
-    const c = Math.cos(th), s = Math.sin(th);
-    let r = 1;
-    for (const { h, amp, phase } of harmonics) r += amp * Math.sin(h * th + phase);
-    const bu = Math.sign(c) * Math.pow(Math.abs(c), 2 / N);
-    const bv = Math.sign(s) * Math.pow(Math.abs(s), 2 / N);
-    const u = bu * r, v = bv * r;
-    raw.push([u, v]);
-    maxU = Math.max(maxU, Math.abs(u)); maxV = Math.max(maxV, Math.abs(v));
-  }
-  // fill the canvas (with a small margin) regardless of how lumpy the draw was
-  return raw.map(([u, v]) => [0.5 + (u / maxU) * 0.485, 0.5 + (v / maxV) * 0.485]);
+/* The map window = the sensor field plus a margin, so even the outermost sensors sit inside the land
+   with room to spare (the extent in the data is, by definition, the sensors' own bounding box). */
+const VIEW_PAD = 0.12;
+function viewExtent() {
+  const e = state.meta.field_extent_m, w = e.x_max - e.x_min, h = e.y_max - e.y_min;
+  return { x_min: e.x_min - VIEW_PAD * w, x_max: e.x_max + VIEW_PAD * w,
+           y_min: e.y_min - VIEW_PAD * h, y_max: e.y_max + VIEW_PAD * h };
 }
 
+/* A random, lumpy coastline that ENCLOSES every real sensor by construction.
+   Star-shaped around the sensors' centroid: in every direction the radius is at least the distance to
+   the farthest sensor in that direction (plus a margin), then random lumps push it further out. The
+   outline therefore changes on every draw but can never leave a real sensor in the sea. */
 function generateLand() {
-  const ext = state.meta.field_extent_m;
+  const ext = viewExtent();
   const known = Object.values(state.meta.sensor_coords || {}).map(([x, y]) => [
     (x - ext.x_min) / (ext.x_max - ext.x_min), 1 - (y - ext.y_min) / (ext.y_max - ext.y_min),
   ]);
-  // the real historical sensors must all sit on the land, otherwise Tensor/PINN's replay markers would float in the sea
-  for (let attempt = 0; attempt < 500; attempt++) {
-    const pts = randomBlob(Math.max(0.1, 1 - attempt / 300));
+  const TWO_PI = Math.PI * 2, STEPS = 180;
+  const cu = known.length ? known.reduce((a, p) => a + p[0], 0) / known.length : 0.5;
+  const cv = known.length ? known.reduce((a, p) => a + p[1], 0) / known.length : 0.5;
+  const polar = known.map(([u, v]) => ({ a: Math.atan2(v - cv, u - cu), d: Math.hypot(u - cu, v - cv) }));
+  const angDiff = (a, b) => { const d = Math.abs(a - b) % TWO_PI; return d > Math.PI ? TWO_PI - d : d; };
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const sigma = 0.20 + Math.random() * 0.18;                    // how tightly the coast hugs individual sensors
+    const slack = 0.04 + Math.random() * 0.03 + attempt * 0.02;    // proportional margin beyond the farthest sensor
+    const floorR = 0.22 + Math.random() * 0.06;                    // keeps a solid body where there are no sensors
+    const lumps = [2, 3, 4, 6, 9].map(h => ({ h, amp: (0.05 + Math.random() * 0.07) / Math.sqrt(h), ph: Math.random() * TWO_PI }));
+    let radii = [];
+    for (let i = 0; i < STEPS; i++) {
+      const th = (i / STEPS) * TWO_PI - Math.PI;
+      let env = floorR;
+      for (const p of polar) env = Math.max(env, p.d * Math.exp(-Math.pow(angDiff(th, p.a) / sigma, 2)));
+      let bump = 0;
+      for (const { h, amp, ph } of lumps) bump += amp * (0.5 + 0.5 * Math.sin(h * th + ph));
+      radii.push(env * (1 + slack + bump) + 0.02);
+    }
+    // soften the sharp corners between neighbouring sensors (circular moving average); the check below
+    // still guarantees every sensor stays inside, and widens the margin and retries if smoothing cut one off
+    for (let pass = 0; pass < 2; pass++) {
+      radii = radii.map((_, i) => {
+        let s = 0; for (let k = -3; k <= 3; k++) s += radii[(i + k + STEPS) % STEPS];
+        return s / 7;
+      });
+    }
+    const pts = radii.map((r, i) => {
+      const th = (i / STEPS) * TWO_PI - Math.PI;
+      return [clamp(cu + r * Math.cos(th), 0.012, 0.988), clamp(cv + r * Math.sin(th), 0.012, 0.988)];
+    });
     if (known.every(([u, v]) => pointInPoly(u, v, pts))) return pts;
   }
-  // last resort: an almost-rectangular plot that contains everything
+  // should never happen; a rounded rectangle that contains everything
   const pts = [];
-  for (let i = 0; i < 140; i++) {
-    const th = (i / 140) * Math.PI * 2, c = Math.cos(th), s = Math.sin(th);
-    pts.push([0.5 + Math.sign(c) * Math.pow(Math.abs(c), 0.12) * 0.495, 0.5 + Math.sign(s) * Math.pow(Math.abs(s), 0.12) * 0.495]);
+  for (let i = 0; i < STEPS; i++) {
+    const th = (i / STEPS) * TWO_PI, c = Math.cos(th), s = Math.sin(th);
+    pts.push([0.5 + Math.sign(c) * Math.pow(Math.abs(c), 0.15) * 0.488, 0.5 + Math.sign(s) * Math.pow(Math.abs(s), 0.15) * 0.488]);
   }
   return pts;
 }
@@ -255,14 +276,14 @@ function drawField(data) {
 }
 
 function fieldToCanvasXY(x, y) {
-  const extent = state.meta.field_extent_m;
+  const extent = viewExtent();
   const rect = els.markerCanvas.getBoundingClientRect();
   const px = ((x - extent.x_min) / (extent.x_max - extent.x_min)) * rect.width;
   const py = (1 - (y - extent.y_min) / (extent.y_max - extent.y_min)) * rect.height;
   return [px, py];
 }
 function canvasToFieldXY(px, py) {
-  const extent = state.meta.field_extent_m;
+  const extent = viewExtent();
   const rect = els.markerCanvas.getBoundingClientRect();
   const x = extent.x_min + (px / rect.width) * (extent.x_max - extent.x_min);
   const y = extent.y_min + (1 - py / rect.height) * (extent.y_max - extent.y_min);
@@ -388,7 +409,7 @@ function addSensorAt(x, y) {
 }
 
 function addRandomSensors(n) {
-  const extent = state.meta.field_extent_m;
+  const extent = viewExtent();
   const vw = state.meta.variables.VW, t = state.meta.variables.T;
   for (let i = 0; i < n; i++) {
     // rejection-sample so every random sensor lands on the land
@@ -448,12 +469,19 @@ function applyMethodVisibility() {
   document.querySelectorAll("#methodSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.method === state.method));
 }
 
+// Shallow depths are not offered in the picker, and the page opens on 90 cm.
+// (The API still knows every trained depth; this only controls what the page shows.)
+const HIDDEN_DEPTHS = [30, 60];
+const DEFAULT_DEPTH = 90;
+
 function buildDepthButtons() {
   els.depthRow.innerHTML = "";
-  state.meta.depths_cm.forEach((d, i) => {
+  const depths = state.meta.depths_cm.filter(d => !HIDDEN_DEPTHS.includes(d));
+  const start = depths.includes(DEFAULT_DEPTH) ? DEFAULT_DEPTH : depths[0];
+  depths.forEach(d => {
     const b = document.createElement("button");
     b.textContent = d + "cm"; b.dataset.depth = d;
-    b.setAttribute("aria-pressed", i === 0);
+    b.setAttribute("aria-pressed", d === start);
     b.addEventListener("click", () => {
       state.depth = d;
       document.querySelectorAll("#depthRow button").forEach(x => x.setAttribute("aria-pressed", x === b));
@@ -461,7 +489,7 @@ function buildDepthButtons() {
     });
     els.depthRow.appendChild(b);
   });
-  state.depth = state.meta.depths_cm[0];
+  state.depth = start;
 }
 
 function initTimeline() {
@@ -562,7 +590,7 @@ function wireEvents() {
   els.reshapeBtn.addEventListener("click", () => {
     state.land = generateLand();
     // sensors that now fall outside the new coastline are dropped
-    const ext = state.meta.field_extent_m;
+    const ext = viewExtent();
     state.sensors = state.sensors.filter(s => isInsideLand(
       (s.x - ext.x_min) / (ext.x_max - ext.x_min), 1 - (s.y - ext.y_min) / (ext.y_max - ext.y_min)));
     closeEditCard(); refreshSensorCount();
@@ -584,6 +612,10 @@ function wireEvents() {
   if (!state.meta) return;
   const extent = state.meta.field_extent_m;
   els.cornerBR.textContent = `${Math.round(extent.x_max - extent.x_min)} m × ${Math.round(extent.y_max - extent.y_min)} m`;
+  // match the map's shape to the real field (it is not 870 x 560), margin included, then re-measure
+  const ve = viewExtent();
+  els.fieldCanvas.parentElement.style.aspectRatio = `${ve.x_max - ve.x_min} / ${ve.y_max - ve.y_min}`;
+  sizeCanvases();
   state.land = generateLand();
   buildDepthButtons();
   initTimeline();

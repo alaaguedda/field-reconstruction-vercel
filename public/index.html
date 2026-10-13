@@ -47,7 +47,7 @@
   .seg button { flex:1; border:none; background:transparent; color:var(--ink); padding:9px 6px; font-size:.85rem; cursor:pointer; font-family:var(--sans); }
   .seg button + button { border-left:1px solid var(--border); }
   .seg button[aria-pressed="true"] { background:var(--accent); color:var(--accent-ink); font-weight:600; }
-  .depthrow { display:grid; grid-template-columns:repeat(5,1fr); gap:4px; }
+  .depthrow { display:grid; grid-template-columns:repeat(auto-fit, minmax(56px, 1fr)); gap:4px; }
   .depthrow button { font-family:var(--mono); font-size:.72rem; padding:7px 2px; border:1px solid var(--border); background:transparent; color:var(--ink); border-radius:6px; cursor:pointer; }
   .depthrow button[aria-pressed="true"] { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
   .row { display:flex; align-items:center; justify-content:space-between; font-size:.85rem; margin-bottom:8px; }
