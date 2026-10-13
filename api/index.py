@@ -118,7 +118,32 @@ load_system()
 # ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------
+WEAK_STRUCTURE_SHARE = 0.05   # partial-sill / sill below this = "no spatial correlation detected"
+
+
+def sanitize_variogram(params):
+    """Return (nugget, sill, range, structure) with a *valid* variogram: sill >= nugget.
+
+    PyKrige turns the parameters into a partial sill = sill - nugget. If a fit ever stored a nugget
+    larger than its sill (an unconstrained curve fit can), that partial sill is negative, the
+    variogram FALLS with distance, and kriging weights far-away sensors above near ones — the
+    reconstructed field then looks inverted around every sensor. A variogram that is flat (no
+    spatial structure in the training data) is the honest valid reading of such a fit, so we clamp
+    to it and report structure="none" so the UI can say so.
+    """
+    nugget = max(0.0, float(params["nugget"]))
+    sill = float(params["sill"])
+    rng = max(float(params["range"]), 1e-6)
+    total = max(sill, nugget, 1e-12)
+    psill = max(sill - nugget, 0.0)
+    structure = "none" if psill / total < WEAK_STRUCTURE_SHARE else "ok"
+    psill = max(psill, 1e-9 * total)      # keep the kriging system well-posed
+    return nugget, nugget + psill, rng, structure
+
+
 def kriging_grid(var, depth, sensors, gx, gy):
+    """Returns (grid, structure) — structure is "none" when the frozen variogram for this depth
+    shows no usable spatial correlation, otherwise "ok"."""
     params = SYSTEM["per_variable"][var]["kriging_params"].get(str(depth))
     if not sensors:
         raise HTTPException(400, "Kriging needs at least one sensor.")
@@ -127,16 +152,18 @@ def kriging_grid(var, depth, sensors, gx, gy):
     vals = np.array([s["value"] for s in sensors])
 
     if len(sensors) == 1:
-        return np.full((len(gy), len(gx)), vals[0])
+        return np.full((len(gy), len(gx)), vals[0]), "ok"
 
+    structure = "ok"
     kwargs = dict(variogram_model="spherical", verbose=False, enable_plotting=False)
     if params and params.get("nugget") is not None and len(sensors) >= 3:
+        nugget, sill, rng, structure = sanitize_variogram(params)
         kwargs["variogram_model"] = params["model"]
-        kwargs["variogram_parameters"] = {"nugget": params["nugget"], "sill": params["sill"], "range": params["range"]}
+        kwargs["variogram_parameters"] = {"nugget": nugget, "sill": sill, "range": rng}
     try:
         ok = OrdinaryKriging(xs, ys, vals, **kwargs)
         grid, _ = ok.execute("grid", gx, gy)
-        return np.asarray(grid)
+        return np.asarray(grid), structure
     except Exception:
         # fall back to a simple IDW if Kriging's linear system is degenerate (e.g. collinear points)
         GX, GY = np.meshgrid(gx, gy)
@@ -145,7 +172,7 @@ def kriging_grid(var, depth, sensors, gx, gy):
         d = np.maximum(d, 1e-6)
         w = 1.0 / d ** 2
         pred = (w @ vals) / w.sum(axis=1)
-        return pred.reshape(GX.shape)
+        return pred.reshape(GX.shape), structure
 
 
 def interpolate_location_factors(xy_query, coords_known, A, k=6, power=2):
@@ -257,9 +284,10 @@ def reconstruct(req: ReconstructRequest):
     gx = np.linspace(extent["x_min"], extent["x_max"], req.grid_n)
     gy = np.linspace(extent["y_min"], extent["y_max"], req.grid_n)
 
+    structure = "ok"
     if req.method == "kriging":
         sensors = [s.dict() for s in (req.sensors or [])]
-        grid = kriging_grid(req.variable, req.depth, sensors, gx, gy)
+        grid, structure = kriging_grid(req.variable, req.depth, sensors, gx, gy)
     elif req.method == "tensor":
         grid = tensor_grid(req.variable, req.depth, req.date, gx, gy)
     elif req.method == "pinn":
@@ -274,6 +302,7 @@ def reconstruct(req: ReconstructRequest):
         "y": gy.tolist(),
         "min": float(grid.min()),
         "max": float(grid.max()),
+        "spatial_structure": structure,   # "none" = kriging's frozen variogram for this depth is flat
     }
 
 
